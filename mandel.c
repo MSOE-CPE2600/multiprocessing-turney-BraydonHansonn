@@ -10,13 +10,20 @@
 #include <stdio.h>
 #include <unistd.h>
 #include "jpegrw.h"
+#include <string.h>
+#include <math.h>
 
 // local routines
 static int iteration_to_color( int i, int max );
 static int iterations_at_point( double x, double y, int max );
 static void compute_image( imgRawImage *img, double xmin, double xmax,
 									double ymin, double ymax, int max );
+
+static void createImages(double xcenter, double ycenter, double xscale, double yscale, int image_width, int image_height, int radius, int max, char *outfile);
 static void show_help();
+
+
+
 
 
 int main( int argc, char *argv[] )
@@ -25,7 +32,7 @@ int main( int argc, char *argv[] )
 
 	// These are the default configuration values used
 	// if no command line arguments are given.
-	const char *outfile = "mandel.jpg";
+	char *outfile = "mandel";
 	double xcenter = 0;
 	double ycenter = 0;
 	double xscale = 4;
@@ -33,6 +40,7 @@ int main( int argc, char *argv[] )
 	int    image_width = 1000;
 	int    image_height = 1000;
 	int    max = 1000;
+	int radius = (image_width / 2) * 1.5;
 
 	// For each command line argument given,
 	// override the appropriate configuration value.
@@ -68,27 +76,8 @@ int main( int argc, char *argv[] )
 		}
 	}
 
-	// Calculate y scale based on x scale (settable) and image sizes in X and Y (settable)
-	yscale = xscale / image_width * image_height;
-
-	// Display the configuration of the image.
-	printf("mandel: x=%lf y=%lf xscale=%lf yscale=%1f max=%d outfile=%s\n",xcenter,ycenter,xscale,yscale,max,outfile);
-
-	// Create a raw image of the appropriate size.
-	imgRawImage* img = initRawImage(image_width,image_height);
-
-	// Fill it with a black
-	setImageCOLOR(img,0);
-
-	// Compute the Mandelbrot image
-	compute_image(img,xcenter-xscale/2,xcenter+xscale/2,ycenter-yscale/2,ycenter+yscale/2,max);
-
-	// Save the image in the stated file.
-	storeJpegImageFile(img,outfile);
-
-	// free the mallocs
-	freeRawImage(img);
-
+	//void createImages(int xcenter, int ycenter, int image_width, int image_height, int radius, int max, char *outfile) {
+	createImages(xcenter, ycenter, xscale, yscale, image_width, image_height, radius, max, outfile);
 	return 0;
 }
 
@@ -164,6 +153,39 @@ int iteration_to_color( int iters, int max )
 	return color;
 }
 
+void createImages(double xcenter, double ycenter, double xscale, double yscale, int image_width, int image_height, int radius, int max, char *outfile) {
+		for(int i = 0; i < 50; i++) {
+		// Calculate y scale based on x scale (settable) and image sizes in X and Y (settable)
+
+        xcenter = (image_width / 2 + radius * cos(2 * M_PI * i / 50)) / 1000;
+        ycenter = (image_height / 2 + radius * sin(2 * M_PI * i / 50)) / 1000;
+
+		// xscale = ((xcenter) / 10) * 4;
+		// yscale = ((xcenter) / 10) * 4;
+		// Display the configuration of the image.
+		printf("mandel%d: x=%lf y=%lf xscale=%lf yscale=%1f max=%d outfile=%s\n",i, xcenter,ycenter,xscale,yscale,max,outfile);
+
+		// Create a raw image of the appropriate size.
+		imgRawImage* img = initRawImage(image_width,image_height);
+
+		// Fill it with a black
+		setImageCOLOR(img,0);
+
+		// Compute the Mandelbrot image
+		compute_image(img,xcenter-xscale/2,xcenter+xscale/2,ycenter-yscale/2,ycenter+yscale/2,max);
+
+		// Allocate space for the output file name, considering the base name and extension
+		char outfile_buffer[256];  // Adjust size as needed
+
+		// Create the output filename, appending the index and ".jpeg"
+		snprintf(outfile_buffer, sizeof(outfile_buffer), "%s%d.jpg", outfile, i);
+
+		// Now, use the formatted filename
+		storeJpegImageFile(img, outfile_buffer);
+		// free the mallocs
+		freeRawImage(img);
+	}
+}
 
 // Show help message
 void show_help()
