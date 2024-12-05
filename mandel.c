@@ -16,14 +16,31 @@
 #include <semaphore.h>
 #include <sys/wait.h>
 #include <sys/types.h>
+#include <pthread.h>
 
 // local routines
 static int iteration_to_color( int i, int max );
 static int iterations_at_point( double x, double y, int max );
-static void compute_image( imgRawImage *img, double xmin, double xmax,
-									double ymin, double ymax, int max);
+static void compute_image(imgRawImage *img, double xmin, double xmax,
+									double ymin, double ymax, int max, int num_threads);
+static void compute(void* arg);
 
 static void show_help();
+
+// Structure for each thread to keep track of position in image
+typedef struct threadstruct {
+	double start;
+	double end;
+	double height;
+	double width;
+	double max;
+
+    double xmin;
+    double xmax;
+    double ymin;
+    double ymax;
+    imgRawImage *img;
+}threadstruct;
 
 
 
@@ -44,12 +61,13 @@ int main( int argc, char *argv[] )
 	int    image_width = 1000;
 	int    image_height = 1000;
 	int    max = 1000;
+	int    num_threads = 1;
 
 
 	// For each command line argument given,
 	// override the appropriate configuration value.
 
-	while((c = getopt(argc,argv,"x:y:s:W:H:m:c:o:h"))!=-1) {
+	while((c = getopt(argc,argv,"x:y:s:W:H:m:c:o:t:h"))!=-1) {
 		switch(c) 
 		{
 			case 'x':
@@ -73,6 +91,12 @@ int main( int argc, char *argv[] )
 			case 'c':	// added this to allow number of children to be entered
 				children = atoi(optarg);
 				break;
+			case 't':
+				num_threads = atoi(optarg);
+				if(num_threads < 1 || num_threads > 20 ) {
+                    num_threads = 1;
+				}
+				break;
 			case 'o':
 				outfile = optarg;
 				break;
@@ -84,23 +108,26 @@ int main( int argc, char *argv[] )
 	}
 
     // Process to create images 
+	if(children <= 0) {
+		children = 1;
+	}
     int total_images = 50;
     int images_per_child = total_images / children;
 
     // Assign Process
-    pid_t pid;
+    pid_t pids[children];
 	double scales[total_images];
     for (int i = 0; i < total_images; i++) {
         //gets an equal incrementation for the array of scales
 		double temp = (double) i  / (total_images - 1);
 		// creates how fast the rate of x and y scale are
-		scales[i] = xcenter * pow(0.1, temp);
+		scales[i] = xcenter * pow(0.0001, temp);
     }
-
+	
 
 	for(int i = 0; i < children; i++) {
-			pid = fork();
-			if(pid == 0) {      // child
+			pids[i] = fork();
+			if(pids[i] == 0) {      // child
 				int start = i * images_per_child;
 				int end = (i == children - 1) ? total_images : start + images_per_child;
 				// for loop to make all images
@@ -110,7 +137,6 @@ int main( int argc, char *argv[] )
 					xscale = (scales[k] * (double)(image_width * image_height) / 1000000) / 2;
 
 					printf("mandel%d: x=%lf y=%lf xscale=%lf yscale=%1f max=%d outfile=%s\n", k, xcenter,ycenter,xscale,yscale,max,outfile);
-
 					// Create a raw image of the appropriate size.
 					imgRawImage* img = initRawImage(image_width, image_height);
 
@@ -118,7 +144,7 @@ int main( int argc, char *argv[] )
 					setImageCOLOR(img,0);
 
 					// Compute the Mandelbrot image
-					compute_image(img,xcenter-xscale/2,xcenter+xscale/2,ycenter-yscale/2,ycenter+yscale/2,max);
+					compute_image(img, xcenter-xscale/2, xcenter+xscale/2, ycenter-yscale/2, ycenter+yscale/2, max, num_threads);
 
 					// Allocate space for the output file name, considering the base name and extension
 					char outfile_buffer[256];  // Adjust size as needed
@@ -129,12 +155,13 @@ int main( int argc, char *argv[] )
 					// Now, use the formatted filename
 					storeJpegImageFile(img, outfile_buffer);
 				}
-				exit(1);
+				exit(0);
 			}
 		}
+
 		// wait for all of the children to be complete
 		for(int i = 0; i < children; i++) {
-			wait(NULL);
+			waitpid(pids[i], NULL, 0);
 		}
 		return 0;
 	}
@@ -173,32 +200,63 @@ Compute an entire Mandelbrot image, writing each point to the given bitmap.
 Scale the image to the range (xmin-xmax,ymin-ymax), limiting iterations to "max"
 */
 
-void compute_image(imgRawImage* img, double xmin, double xmax, double ymin, double ymax, int max)
+void compute_image(imgRawImage* img, double xmin, double xmax, double ymin, double ymax, int max, int num_threads)
 {
-	int i,j;
+	// Getting threads
+	pthread_t threads[num_threads];
+	threadstruct threadata[num_threads];
+	// Divide out total height with number of threads
+	int region_size = img->height / num_threads;
 
-	int width = img->width;
-	int height = img->height;
+
+	// Assigning values to each thread structure
+	for(int i = 0; i < num_threads; i++) {
+		threadata[i].start = i * region_size;
+		threadata[i].end = (i == num_threads - 1) ? img->height : (i + 1) * region_size;
+		threadata[i].height = img->height;
+		threadata[i].width = img->width;
+		threadata[i].max = max;
+		threadata[i].img = img;
+		threadata[i].xmin = xmin;
+		threadata[i].xmax = xmax;
+		threadata[i].ymin = ymin;
+		threadata[i].ymax = ymax;
+		// Create the thread with new data
+		pthread_create(&threads[i], NULL, (void*)compute, &threadata[i]);
+	}
+	// End all threads after
+	for(int i = 0; i < num_threads; i++) {
+		pthread_join(threads[i], NULL);
+	}
+}
+
+void compute(void* arg) {
+	// Turn parameter into thread struct to access data
+	threadstruct* temp = (threadstruct*) arg;
+
+	int i,j;
+	int width = temp->width;
+	int height = temp->height;
 
 	// For every pixel in the image...
 
-	for(j=0;j<height;j++) {
+	for(j=temp->start;j < temp->end;j++) {
 
 		for(i=0;i<width;i++) {
 
 			// Determine the point in x,y space for that pixel.
-			double x = xmin + i*(xmax-xmin)/width;
-			double y = ymin + j*(ymax-ymin)/height;
+			double x = temp->xmin + i * (temp->xmax-temp->xmin) / width;
+			double y = temp->ymin + j * (temp->ymax-temp->ymin) / height;
 
 			// Compute the iterations at that point.
-			int iters = iterations_at_point(x,y,max);
+			int iters = iterations_at_point(x,y,temp->max);
 
 			// Set the pixel in the bitmap.
-			setPixelCOLOR(img,i,j,iteration_to_color(iters,max));
+			setPixelCOLOR(temp->img, i, j, iteration_to_color(iters,temp->max));
+
 		}
 	}
 }
-
 
 /*
 Convert a iteration number to a color.
